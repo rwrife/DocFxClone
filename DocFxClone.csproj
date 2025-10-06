@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DocFxClone</AssemblyName>
+    <RootNamespace>DocFxClone</RootNamespace>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <!-- Exclude the DocFxParser submodule from default compile -->
+    <Compile Remove="DocFxParser\**" />
+    
+    <!-- Include only the files we need from DocFxParser -->
+    <Compile Include="DocFxParser\DocfxDependencyParser.cs" />
+    <Compile Include="DocFxParser\DocfxModels.cs" />
+    <Compile Include="DocFxParser\FlexibleStringListConverter.cs" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Markdig" Version="0.31.0" />
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="8.0.0" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.11.62" />
+    <PackageReference Include="YamlDotNet" Version="16.1.3" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+  </ItemGroup>
+</Project>

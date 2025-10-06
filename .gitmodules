@@ -1,3 +1,4 @@
 [submodule "DocFxParser"]
 	path = DocFxParser
 	url = https://github.com/rwrife/DocFxParser.git
+  branch = main
