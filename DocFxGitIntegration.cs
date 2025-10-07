@@ -1,4 +1,5 @@
 using DocFxParser;
+using Newtonsoft.Json;
 
 namespace DocFxClone;
 
@@ -21,21 +22,30 @@ public class DocFxGitIntegration
     /// Initialize a sparse clone and parse the DocFX project, checking out files on demand.
     /// </summary>
     /// <param name="repositoryUrl">The git repository URL</param>
-    /// <param name="docfxJsonPath">The path to docfx.json within the repository</param>
+    /// <param name="docfxJsonPath">The path to docfx.json within the repository (or directory containing docfx.json)</param>
     /// <param name="branch">Optional branch name</param>
+    /// <param name="createDefault">Create a default docfx.json if one is not found</param>
     /// <returns>The DocFX dependency result</returns>
     public async Task<DocfxDependencyResult> CloneAndParseAsync(
         string repositoryUrl, 
         string docfxJsonPath, 
-        string? branch = null)
+        string? branch = null,
+        bool createDefault = false)
     {
+        // Normalize the docfx path
+        docfxJsonPath = NormalizeDocfxPath(docfxJsonPath);
+
         // Initialize sparse checkout
         await _gitUtility.InitializeSparseCloneAsync(repositoryUrl, branch);
 
-        // Checkout the docfx.json file
-        await _gitUtility.CheckoutFileAsync(docfxJsonPath);
-
+        // Try to checkout the docfx.json file
         var fullDocfxPath = _gitUtility.GetFullPath(docfxJsonPath);
+        bool docfxExists = await TryCheckoutDocfxJsonAsync(docfxJsonPath, fullDocfxPath, createDefault);
+
+        if (!docfxExists)
+        {
+            throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
+        }
 
         // Pre-checkout files that match docfx.json glob patterns so the parser can enumerate them
         await PreCheckoutMatchingFilesAsync(fullDocfxPath);
@@ -57,29 +67,224 @@ public class DocFxGitIntegration
     /// Parse an already cloned DocFX project with on-demand file checkout.
     /// Assumes the repository has been initialized with InitializeSparseCloneAsync.
     /// </summary>
-    /// <param name="docfxJsonPath">The path to docfx.json within the repository</param>
+    /// <param name="docfxJsonPath">The path to docfx.json within the repository (or directory containing docfx.json)</param>
+    /// <param name="createDefault">Create a default docfx.json if one is not found</param>
     /// <returns>The DocFX dependency result</returns>
-    public async Task<DocfxDependencyResult> ParseWithCheckoutAsync(string docfxJsonPath)
+    public async Task<DocfxDependencyResult> ParseWithCheckoutAsync(string docfxJsonPath, bool createDefault = false)
     {
-        // Checkout the docfx.json file
-        await _gitUtility.CheckoutFileAsync(docfxJsonPath);
+        // Normalize the docfx path
+        docfxJsonPath = NormalizeDocfxPath(docfxJsonPath);
 
+        // Check if this is a regular git repository (not sparse clone)
         var fullDocfxPath = _gitUtility.GetFullPath(docfxJsonPath);
+        bool isRegularGitRepo = IsRegularGitRepository();
+        
+        if (isRegularGitRepo)
+        {
+            // For regular git repositories, just check if docfx.json exists or create it
+            if (!File.Exists(fullDocfxPath))
+            {
+                if (createDefault)
+                {
+                    await CreateDefaultDocfxJsonAsync(fullDocfxPath);
+                    _gitCallback.OnGitSuccess("Created default docfx.json", $"Created default configuration at {docfxJsonPath}");
+                }
+                else
+                {
+                    throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
+                }
+            }
+            
+            // For regular repositories, we don't need special file checkout - just parse directly
+            var fileCallback = new RegularFileAccessCallback();
+            var parser = new DocfxDependencyParser(fileCallback);
+            return parser.Collect(fullDocfxPath);
+        }
+        else
+        {
+            // Original sparse checkout logic
+            bool docfxExists = await TryCheckoutDocfxJsonAsync(docfxJsonPath, fullDocfxPath, createDefault);
 
-        // Pre-checkout files that match docfx.json glob patterns so the parser can enumerate them
-        await PreCheckoutMatchingFilesAsync(fullDocfxPath);
+            if (!docfxExists)
+            {
+                throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
+            }
 
-        // Create a custom file access callback that checks out files on demand
-        var fileCallback = new GitFileAccessCallback(_gitUtility);
+            // Pre-checkout files that match docfx.json glob patterns so the parser can enumerate them
+            await PreCheckoutMatchingFilesAsync(fullDocfxPath);
 
-        // Parse the DocFX project - the callback will check out files as needed
-        var parser = new DocfxDependencyParser(fileCallback);
-        var result = parser.Collect(fullDocfxPath);
+            // Create a custom file access callback that checks out files on demand
+            var fileCallback = new GitFileAccessCallback(_gitUtility);
 
-        // After parsing, ensure all files in the result are checked out
-        await CheckoutAllReferencedFilesAsync(result, fullDocfxPath);
+            // Parse the DocFX project - the callback will check out files as needed
+            var parser = new DocfxDependencyParser(fileCallback);
+            var result = parser.Collect(fullDocfxPath);
 
-        return result;
+            // After parsing, ensure all files in the result are checked out
+            await CheckoutAllReferencedFilesAsync(result, fullDocfxPath);
+
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Try to checkout the docfx.json file, creating a default one if it doesn't exist and createDefault is true.
+    /// </summary>
+    /// <param name="docfxJsonPath">The relative path to docfx.json within the repository</param>
+    /// <param name="fullDocfxPath">The full local path to docfx.json</param>
+    /// <param name="createDefault">Whether to create a default docfx.json if not found</param>
+    /// <returns>True if the file exists or was created, false otherwise</returns>
+    private async Task<bool> TryCheckoutDocfxJsonAsync(string docfxJsonPath, string fullDocfxPath, bool createDefault)
+    {
+        try
+        {
+            // Try to checkout the file first
+            await _gitUtility.CheckoutFileAsync(docfxJsonPath);
+            bool exists = File.Exists(fullDocfxPath);
+            
+            // If the file exists after checkout, we're done
+            if (exists)
+            {
+                return true;
+            }
+            
+            // If the file doesn't exist after checkout and createDefault is true, create a default one
+            if (createDefault)
+            {
+                try
+                {
+                    await CreateDefaultDocfxJsonAsync(fullDocfxPath);
+                    
+                    // Verify the file was created successfully
+                    if (File.Exists(fullDocfxPath))
+                    {
+                        _gitCallback.OnGitSuccess("Created default docfx.json", $"Created default configuration at {docfxJsonPath}");
+                        return true;
+                    }
+                    else
+                    {
+                        _gitCallback.OnGitError("Create default docfx.json", $"Failed to create file at {fullDocfxPath}");
+                        return false;
+                    }
+                }
+                catch (Exception createEx)
+                {
+                    _gitCallback.OnGitError("Create default docfx.json", $"Failed to create default file: {createEx.Message}");
+                    return false;
+                }
+            }
+            
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // If checkout fails and createDefault is true, create a default docfx.json
+            if (createDefault)
+            {
+                try
+                {
+                    await CreateDefaultDocfxJsonAsync(fullDocfxPath);
+                    
+                    // Verify the file was created successfully
+                    if (File.Exists(fullDocfxPath))
+                    {
+                        _gitCallback.OnGitSuccess("Created default docfx.json", $"Created default configuration at {docfxJsonPath}");
+                        return true;
+                    }
+                    else
+                    {
+                        _gitCallback.OnGitError("Create default docfx.json", $"Failed to create file at {fullDocfxPath}");
+                        return false;
+                    }
+                }
+                catch (Exception createEx)
+                {
+                    _gitCallback.OnGitError("Create default docfx.json", $"Failed to create default file: {createEx.Message}");
+                    return false;
+                }
+            }
+            else
+            {
+                _gitCallback.OnGitError("Checkout docfx.json", $"File not found and createDefault is false: {ex.Message}");
+            }
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Creates a default docfx.json file with content and resource sections.
+    /// </summary>
+    /// <param name="fullDocfxPath">The full local path where to create the docfx.json file</param>
+    private async Task CreateDefaultDocfxJsonAsync(string fullDocfxPath)
+    {
+        var defaultConfig = new
+        {
+            build = new
+            {
+                content = new[]
+                {
+                    new
+                    {
+                        files = new[] { "**/*.yml", "**/*.md" }
+                    }
+                },
+                resource = new[]
+                {
+                    new
+                    {
+                        files = new[] { "**/*.jpg", "**/*.png" }
+                    }
+                },
+                dest = "_site"
+            }
+        };
+
+        // Ensure the directory exists
+        var directory = Path.GetDirectoryName(fullDocfxPath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var json = JsonConvert.SerializeObject(defaultConfig, Formatting.Indented);
+        await File.WriteAllTextAsync(fullDocfxPath, json);
+    }
+
+    /// <summary>
+    /// Check if we're working with a regular git repository (not a sparse clone setup).
+    /// </summary>
+    private bool IsRegularGitRepository()
+    {
+        var gitDir = Path.Combine(_gitUtility.GetFullPath(""), ".git");
+        return Directory.Exists(gitDir);
+    }
+
+    /// <summary>
+    /// Normalize the docfx path by appending "docfx.json" if it doesn't already end with it.
+    /// </summary>
+    /// <param name="docfxPath">The provided docfx path</param>
+    /// <returns>The normalized path ending with docfx.json</returns>
+    private string NormalizeDocfxPath(string docfxPath)
+    {
+        if (string.IsNullOrWhiteSpace(docfxPath))
+        {
+            return "docfx.json";
+        }
+
+        // If the path already ends with docfx.json (case insensitive), return as-is
+        if (docfxPath.EndsWith("docfx.json", StringComparison.OrdinalIgnoreCase))
+        {
+            return docfxPath;
+        }
+
+        // If it ends with a directory separator, just append docfx.json
+        if (docfxPath.EndsWith("/") || docfxPath.EndsWith("\\"))
+        {
+            return docfxPath + "docfx.json";
+        }
+
+        // Otherwise, assume it's a directory and append /docfx.json
+        return docfxPath + "/docfx.json";
     }
 
     /// <summary>
@@ -252,10 +457,11 @@ public class DocFxGitIntegration
             
         // Convert glob pattern to regex
         var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
-            .Replace("\\*\\*/", ".*?/")
-            .Replace("\\*\\*", ".*")
-            .Replace("\\*", "[^/]*")
-            .Replace("\\?", ".")
+            .Replace("\\*\\*/\\*", "(.*?/)?[^/]*")  // **/* should match files in root or subdirs
+            .Replace("\\*\\*/", "(.*?/)?")          // **/ should match nothing or path/
+            .Replace("\\*\\*", ".*")                // ** should match anything
+            .Replace("\\*", "[^/]*")                // * should match anything except /
+            .Replace("\\?", ".")                    // ? should match any single character
             + "$";
             
         return System.Text.RegularExpressions.Regex.IsMatch(path, regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -343,6 +549,28 @@ internal class GitFileAccessCallback : IFileAccessCallback
             // If checkout fails, return false to skip the file
             return false;
         }
+    }
+
+    public void OnAfterFileRead(string filePath, string purpose)
+    {
+        // Nothing to do after reading
+    }
+
+    public void OnFileReadError(string filePath, string purpose, Exception exception)
+    {
+        // Errors are handled by the parser
+    }
+}
+
+/// <summary>
+/// File access callback for regular git repositories (non-sparse checkout).
+/// </summary>
+internal class RegularFileAccessCallback : IFileAccessCallback
+{
+    public bool OnBeforeFileRead(string filePath, string purpose)
+    {
+        // For regular repositories, files should already exist
+        return File.Exists(filePath);
     }
 
     public void OnAfterFileRead(string filePath, string purpose)

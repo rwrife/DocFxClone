@@ -12,14 +12,16 @@ var cloneDocfxPathArg = new Argument<string>("docfx-path", "Path to docfx.json w
 var cloneOutputOption = new Option<string?>("--output", "Output directory (default: ./<repo-name>)");
 var cloneBranchOption = new Option<string?>("--branch", "Branch to clone (default: remote HEAD)");
 var cloneSilentOption = new Option<bool>("--silent", "Suppress progress output");
+var cloneCreateDefaultOption = new Option<bool>("--create-default", "Create a default docfx.json if one is not found");
 
 cloneCommand.AddArgument(cloneRepoUrlArg);
 cloneCommand.AddArgument(cloneDocfxPathArg);
 cloneCommand.AddOption(cloneOutputOption);
 cloneCommand.AddOption(cloneBranchOption);
 cloneCommand.AddOption(cloneSilentOption);
+cloneCommand.AddOption(cloneCreateDefaultOption);
 
-cloneCommand.SetHandler(async (string repoUrl, string docfxPath, string? outputPath, string? branch, bool silent) =>
+cloneCommand.SetHandler(async (string repoUrl, string docfxPath, string? outputPath, string? branch, bool silent, bool createDefault) =>
 {
     try
     {
@@ -46,7 +48,7 @@ cloneCommand.SetHandler(async (string repoUrl, string docfxPath, string? outputP
             Console.WriteLine();
         }
 
-        var result = await integration.CloneAndParseAsync(repoUrl, docfxPath, branch);
+        var result = await integration.CloneAndParseAsync(repoUrl, docfxPath, branch, createDefault);
 
         if (!silent)
         {
@@ -70,19 +72,21 @@ cloneCommand.SetHandler(async (string repoUrl, string docfxPath, string? outputP
         }
         Environment.Exit(2);
     }
-}, cloneRepoUrlArg, cloneDocfxPathArg, cloneOutputOption, cloneBranchOption, cloneSilentOption);
+}, cloneRepoUrlArg, cloneDocfxPathArg, cloneOutputOption, cloneBranchOption, cloneSilentOption, cloneCreateDefaultOption);
 
 // Create parse command
 var parseCommand = new Command("parse", "Parse an existing repository with on-demand file checkout");
 var parseLocalRepoArg = new Argument<string>("local-repo-path", "Path to the local repository");
 var parseDocfxPathArg = new Argument<string>("docfx-path", "Path to docfx.json within the repository");
 var parseSilentOption = new Option<bool>("--silent", "Suppress progress output");
+var parseCreateDefaultOption = new Option<bool>("--create-default", "Create a default docfx.json if one is not found");
 
 parseCommand.AddArgument(parseLocalRepoArg);
 parseCommand.AddArgument(parseDocfxPathArg);
 parseCommand.AddOption(parseSilentOption);
+parseCommand.AddOption(parseCreateDefaultOption);
 
-parseCommand.SetHandler(async (string localRepoPath, string docfxPath, bool silent) =>
+parseCommand.SetHandler(async (string localRepoPath, string docfxPath, bool silent, bool createDefault) =>
 {
     try
     {
@@ -103,7 +107,7 @@ parseCommand.SetHandler(async (string localRepoPath, string docfxPath, bool sile
             Console.WriteLine();
         }
 
-        var result = await integration.ParseWithCheckoutAsync(docfxPath);
+        var result = await integration.ParseWithCheckoutAsync(docfxPath, createDefault);
 
         if (!silent)
         {
@@ -127,7 +131,7 @@ parseCommand.SetHandler(async (string localRepoPath, string docfxPath, bool sile
         }
         Environment.Exit(2);
     }
-}, parseLocalRepoArg, parseDocfxPathArg, parseSilentOption);
+}, parseLocalRepoArg, parseDocfxPathArg, parseSilentOption, parseCreateDefaultOption);
 
 // Add commands to root
 rootCommand.AddCommand(cloneCommand);
