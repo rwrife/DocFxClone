@@ -47,6 +47,12 @@ public class DocFxGitIntegration
             throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
         }
 
+        // If createDefault is true and docfx.json exists, still check if we need to create index.md
+        if (createDefault && File.Exists(fullDocfxPath))
+        {
+            await CreateDefaultIndexMdIfNeededAsync(fullDocfxPath);
+        }
+
         // Pre-checkout files that match docfx.json glob patterns so the parser can enumerate them
         await PreCheckoutMatchingFilesAsync(fullDocfxPath);
 
@@ -94,6 +100,11 @@ public class DocFxGitIntegration
                     throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
                 }
             }
+            else if (createDefault)
+            {
+                // Even if docfx.json exists, check if we need to create index.md
+                await CreateDefaultIndexMdIfNeededAsync(fullDocfxPath);
+            }
             
             // For regular repositories, we don't need special file checkout - just parse directly
             var fileCallback = new RegularFileAccessCallback();
@@ -108,6 +119,12 @@ public class DocFxGitIntegration
             if (!docfxExists)
             {
                 throw new FileNotFoundException($"DocFX configuration file not found: {docfxJsonPath}");
+            }
+
+            // If createDefault is true and docfx.json exists, still check if we need to create index.md
+            if (createDefault && File.Exists(fullDocfxPath))
+            {
+                await CreateDefaultIndexMdIfNeededAsync(fullDocfxPath);
             }
 
             // Pre-checkout files that match docfx.json glob patterns so the parser can enumerate them
@@ -248,6 +265,41 @@ public class DocFxGitIntegration
 
         var json = JsonConvert.SerializeObject(defaultConfig, Formatting.Indented);
         await File.WriteAllTextAsync(fullDocfxPath, json);
+
+        // Also create an empty index.md if it doesn't exist
+        await CreateDefaultIndexMdIfNeededAsync(fullDocfxPath);
+    }
+
+    /// <summary>
+    /// Creates an empty index.md file if one doesn't exist in the docfx directory.
+    /// </summary>
+    /// <param name="fullDocfxPath">The full local path to the docfx.json file</param>
+    private async Task CreateDefaultIndexMdIfNeededAsync(string fullDocfxPath)
+    {
+        var directory = Path.GetDirectoryName(fullDocfxPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return;
+        }
+
+        var indexMdPath = Path.Combine(directory, "index.md");
+        
+        // Check if index.md already exists
+        if (File.Exists(indexMdPath))
+        {
+            return;
+        }
+
+        try
+        {
+            // Create an empty index.md file
+            await File.WriteAllTextAsync(indexMdPath, string.Empty);
+            _gitCallback.OnGitSuccess("Created default index.md", $"Created empty index.md at {Path.GetRelativePath(_gitUtility.GetFullPath(""), indexMdPath)}");
+        }
+        catch (Exception ex)
+        {
+            _gitCallback.OnGitError("Create default index.md", $"Failed to create index.md: {ex.Message}");
+        }
     }
 
     /// <summary>
